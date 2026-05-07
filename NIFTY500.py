@@ -51,7 +51,9 @@ def get_nifty_500_assets():
         assets = {
             "Reliance Industries Ltd.": "RELIANCE.NS",
             "Tata Consultancy Services Ltd.": "TCS.NS",
-            "HDFC Bank Ltd.": "HDFCBANK.NS"
+            "HDFC Bank Ltd.": "HDFCBANK.NS",
+            "Infosys Ltd.": "INFY.NS",
+            "ICICI Bank Ltd.": "ICICIBANK.NS"
         }
         
     # Always ensure the Index is present for benchmark comparison
@@ -63,13 +65,13 @@ def get_nifty_500_assets():
 # -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* 1. Main Background */
+    /* Main Background */
     .stApp {
         background-color: #fbfaff;
         font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
     }
     
-    /* 2. Sidebar */
+    /* Sidebar */
     [data-testid="stSidebar"] {
         background-color: #ffffff;
         border-right: 1px solid #e9d5ff;
@@ -86,7 +88,7 @@ st.markdown("""
         color: #6b5b95;
     }
     
-    /* 3. Canvas Container */
+    /* Canvas Container */
     .canvas-container {
         background: linear-gradient(135deg, #ffffff 0%, #f3e8ff 100%);
         padding: 30px;
@@ -113,7 +115,7 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* 4. DataFrame Styling */
+    /* DataFrame Styling */
     [data-testid="stDataFrame"] {
         border: 1px solid #e9d5ff;
         border-radius: 12px;
@@ -121,7 +123,7 @@ st.markdown("""
         background-color: white;
     }
 
-    /* 5. Tab Styling */
+    /* Tab Styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 10px;
     }
@@ -147,22 +149,18 @@ st.markdown("""
 def fetch_and_analyze_data(assets_dict):
     """
     Fetches bulk data for all assets to prevent timeouts.
-    Calculates Momentum Score & Volatility.
+    Calculates Momentum Score & Volatility without UI elements to keep caching clean.
     """
     stats_data = []
     history_dict = {}
-    
     tickers = list(assets_dict.values())
     
-    # Bulk Download is essential for 500+ stocks
-    st.info("Downloading bulk data from NSE & Yahoo Finance... Please wait.")
-    # Download 'Close' prices for all tickers simultaneously
+    # Bulk Download
     df_bulk = yf.download(tickers, period="2y", threads=True, progress=False)
     
     if df_bulk.empty:
         return pd.DataFrame(), {}
         
-    # Depending on yfinance version, columns might be MultiIndex. We just need 'Close'
     if isinstance(df_bulk.columns, pd.MultiIndex):
         df_close = df_bulk['Close']
     else:
@@ -170,71 +168,42 @@ def fetch_and_analyze_data(assets_dict):
 
     df_close.index = df_close.index.tz_localize(None)
     
-    # Progress visualization for processing
-    progress_bar = st.progress(0)
-    total = len(assets_dict)
-    
-    for i, (name, ticker) in enumerate(assets_dict.items()):
-        progress_bar.progress((i + 1) / total)
-        
+    for name, ticker in assets_dict.items():
         try:
             if ticker not in df_close.columns:
                 continue
                 
-            # Extract specific stock series and drop empty dates
             hist = df_close[ticker].dropna()
-            
             if len(hist) < 260:  # Need roughly a year of trading days
                 continue
                 
             current_price = float(hist.iloc[-1])
             
-            # Helper: Get lagged price
             def get_price_lag(days):
                 target_date = datetime.now() - timedelta(days=days)
                 idx = hist.index.get_indexer([target_date], method='nearest')[0]
                 return float(hist.iloc[idx])
 
-            # Calculate Returns
-            p12m = get_price_lag(365)
-            p6m  = get_price_lag(180)
-            p3m  = get_price_lag(90)
-            p1m  = get_price_lag(30)
+            # ACDP Momentum Logic
+            r12 = (current_price - get_price_lag(365)) / get_price_lag(365)
+            r6  = (current_price - get_price_lag(180)) / get_price_lag(180)
+            r3  = (current_price - get_price_lag(90))  / get_price_lag(90)
+            r1  = (current_price - get_price_lag(30))  / get_price_lag(30)
             
-            r12 = (current_price - p12m) / p12m
-            r6  = (current_price - p6m)  / p6m
-            r3  = (current_price - p3m)  / p3m
-            r1  = (current_price - p1m)  / p1m
-            
-            # 1. Ranking Logic: Average of 4 timeframes
             avg_score = (r12 + r6 + r3 + r1) / 4
-            
-            # 2. Volatility Logic: Annualized Standard Deviation
-            daily_returns = hist.pct_change().dropna()
-            volatility = daily_returns.std() * np.sqrt(252)
+            volatility = hist.pct_change().dropna().std() * np.sqrt(252)
             
             stats_data.append({
-                "Asset": name,
-                "Price": current_price,
-                "1M": r1,
-                "3M": r3,
-                "6M": r6,
-                "12M": r12,
-                "Score": avg_score,
+                "Asset": name, 
+                "Price": current_price, 
+                "Score": avg_score, 
                 "Vol": volatility
             })
-            
-            # Save history for correlation mapping
             history_dict[name] = hist
-            
         except Exception as e:
             continue
             
-    progress_bar.empty()
-    
-    # Create DataFrames
     df_stats = pd.DataFrame(stats_data)
-    
     if not df_stats.empty:
         # Sort by Score to determine Rank
         df_stats = df_stats.sort_values("Score", ascending=False).reset_index(drop=True)
@@ -271,7 +240,7 @@ with st.sidebar:
     st.caption(f"Last Update:\n{datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 # -----------------------------------------------------------------------------
-# 6. MAIN APP
+# 6. MAIN APP LOGIC
 # -----------------------------------------------------------------------------
 
 # Header
@@ -280,13 +249,18 @@ st.markdown('<div class="big-title">NIFTY 500: TOP 10 LEADERS</div>', unsafe_all
 st.markdown('<div class="subtitle">QUANTITATIVE RANKING & RISK ARCHITECTURE</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# Execution
-with st.spinner("Initializing Market Structure..."):
-    # 1. Fetch live asset dictionary
+# Smart Loading Status
+with st.status("Initializing ACDP Engine...", expanded=True) as status_box:
+    st.write("🔍 Syncing Nifty 500 symbols from NSE...")
     nifty500_assets = get_nifty_500_assets()
     
-    # 2. Run Analytics Engine
+    st.write("📥 Downloading bulk market data (250,000+ data points)...")
     df_stats, history_dict = fetch_and_analyze_data(nifty500_assets)
+    
+    if not df_stats.empty:
+        status_box.update(label="Analysis Complete! Displaying Leaders.", state="complete", expanded=False)
+    else:
+        status_box.update(label="Error: No data retrieved. Check internet connection.", state="error")
 
 if not df_stats.empty:
     
@@ -299,10 +273,10 @@ if not df_stats.empty:
     # Isolate the exact Top 10 from the remaining 500 pool
     df_top10 = df_stocks.head(10) 
     
-    # Combine
+    # Combine Top 10 and Index
     display_df = pd.concat([df_top10, df_index]).reset_index(drop=True)
     
-    # Build correlation engine using ONLY the filtered assets to prevent freezing
+    # Build correlation engine using ONLY the filtered assets to prevent UI freezing
     assets_to_keep = display_df['Asset'].tolist()
     filtered_history = {k: v for k, v in history_dict.items() if k in assets_to_keep}
     df_corr = calculate_correlation(filtered_history)
@@ -392,9 +366,6 @@ if not df_stats.empty:
             st.plotly_chart(fig_vol, use_container_width=True)
             
             st.success("💡 **Note:** Assets clustering in the top-left (High Score, Low Vol) indicate superior risk-adjusted efficiency compared to the benchmark index.")
-
-else:
-    st.error("Engine failed to process market data. Ensure dependencies are installed and network is stable.")
 
 # Footer
 st.write("---")
